@@ -2,6 +2,14 @@
 Changelog
 =========
 
+v0.38.0
+-------
+
+* Add ``referencing.offline``, an offline importer which closes over the
+  resources reachable from a root URI, producing a fully offline `Registry`
+  (or reporting all unsatisfiable references at once via
+  ``referencing.offline.OfflineImportError``).
+
 v0.37.0
 -------
 

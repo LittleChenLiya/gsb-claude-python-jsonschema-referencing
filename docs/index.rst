@@ -44,6 +44,7 @@ For fuller details, see the `intro`.
     :hidden:
 
     intro
+    offline
     schema-packages
     compatibility
     api

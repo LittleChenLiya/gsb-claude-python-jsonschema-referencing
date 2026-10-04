@@ -66,6 +66,14 @@ referencing.exceptions
    :undoc-members:
 
 
+referencing.offline
+^^^^^^^^^^^^^^^^^^^
+
+.. automodule:: referencing.offline
+   :members:
+   :undoc-members:
+
+
 referencing.retrieval
 ^^^^^^^^^^^^^^^^^^^^^
 
