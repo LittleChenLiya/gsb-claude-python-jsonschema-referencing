@@ -36,6 +36,26 @@ class NoSuchResource(KeyError):
 
 
 @frozen
+class MergeConflict(Exception):
+    """
+    Two registries held conflicting resources for the same URI.
+
+    Unlike `Registry.combine`, which silently lets a later registry overwrite
+    an earlier one, `Registry.merge` refuses to unify resources which are not
+    semantically identical. The conflicting resources are held *by reference*
+    on this exception -- their values are not copied -- so that callers can
+    inspect exactly what disagreed.
+    """
+
+    uri: URI
+    resources: tuple[Resource[Any], ...]
+
+    def __str__(self) -> str:
+        shown = ", ".join(repr(each) for each in self.resources)
+        return f"Conflicting resources for {self.uri!r}: {shown}"
+
+
+@frozen
 class NoInternalID(Exception):
     """
     A resource has no internal ID, but one is needed.

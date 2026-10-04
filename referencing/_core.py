@@ -289,6 +289,19 @@ def _fail_to_retrieve(uri: URI):
     raise exceptions.NoSuchResource(ref=uri)
 
 
+def _same_resource(left: Resource[D], right: Resource[D]) -> bool:
+    """
+    Compare two resources by their semantics, not just their contents.
+
+    Two resources are semantically identical when their contents, their
+    dialect (i.e. their `Specification`), and their anchors all agree.
+    The resources themselves are never copied -- this is a pure predicate.
+    """
+    if left != right:  # contents + dialect (specification)
+        return False
+    return list(left.anchors()) == list(right.anchors())
+
+
 @frozen
 class Registry(Mapping[URI, Resource[D]]):
     r"""
@@ -568,6 +581,102 @@ class Registry(Mapping[URI, Resource[D]]):
             self,
             anchors=anchors,
             resources=resources,
+            uncrawled=uncrawled,
+            retrieve=retrieve,
+        )
+
+    def merge(self, *registries: Registry[D]) -> Registry[D]:
+        """
+        Strictly merge together other registries, without overwriting.
+
+        `combine` is permissive: when the same URI is present in more than
+        one registry, the later registry's resource silently overwrites the
+        earlier one. `merge` is explicit about disagreement instead --
+        resources at the same URI must be *semantically* identical, and if
+        they are not, a `MergeConflict` is raised rather than either side
+        being overwritten.
+
+        Two resources are considered semantically identical when their
+        contents, their dialect (i.e. their `Specification`), and their
+        anchors all agree. The dialect and anchors are compared in addition
+        to the contents, so two resources with equal contents but written
+        for different specifications, or which declare different anchors,
+        will conflict.
+
+        Merging never calls the registries' `retrieve` functions, and the
+        source registries are left untouched -- a new registry is produced
+        only when every conflict check passes. The dynamic retrieval
+        capability of the sources is preserved along with the original
+        resources (which are referenced, not copied), so the merged
+        registry resolves exactly as its sources did.
+
+        URIs are normalized with the library's fixed rule (stripping an
+        empty fragment), matching `Registry.with_resources`.
+
+        Raises:
+
+            `exceptions.MergeConflict`
+
+                if the same URI is found with resources which are not
+                semantically identical, or if the same anchor name at a URI
+                resolves to different anchors
+
+        .. code:: python
+
+            >>> from referencing import Registry, Resource
+            >>> one = Registry({"urn:example": Resource.opaque({"foo": 1})})
+            >>> other = Registry({"urn:example": Resource.opaque({"foo": 1})})
+            >>> one.merge(other)
+            <Registry (1 resource)>
+
+        """
+        if registries == (self,):
+            return self
+
+        resources = self._resources
+        anchors = self._anchors
+        uncrawled = self._uncrawled
+        retrieve = self._retrieve
+
+        for registry in registries:
+            for uri, resource in registry._resources.items():
+                uri = uri.rstrip("#")
+                existing = resources.get(uri)
+                if existing is not None:
+                    if not _same_resource(existing, resource):
+                        raise exceptions.MergeConflict(
+                            uri=uri,
+                            resources=(existing, resource),
+                        )
+                else:
+                    resources = resources.insert(uri, resource)
+
+            for (uri, name), anchor in registry._anchors.items():
+                key = (uri.rstrip("#"), name)
+                existing = anchors.get(key)
+                if existing is not None:
+                    if existing != anchor:
+                        raise exceptions.MergeConflict(
+                            uri=key[0],
+                            resources=(existing.resource, anchor.resource),
+                        )
+                else:
+                    anchors = anchors.insert(key, anchor)
+
+            uncrawled = uncrawled.update(registry._uncrawled)
+
+            if registry._retrieve is not _fail_to_retrieve:
+                if registry._retrieve is not retrieve is not _fail_to_retrieve:
+                    raise ValueError(  # noqa: TRY003
+                        "Cannot merge registries with conflicting retrieval "
+                        "functions.",
+                    )
+                retrieve = registry._retrieve
+
+        return evolve(
+            self,
+            resources=resources,
+            anchors=anchors,
             uncrawled=uncrawled,
             retrieve=retrieve,
         )

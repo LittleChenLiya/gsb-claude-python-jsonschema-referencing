@@ -695,6 +695,257 @@ class TestResource:
         )
 
 
+# Run the merger tests with:
+#   pytest referencing/tests/test_core.py -k merge
+class TestRegistryMerge:
+    """
+    Tests for `Registry.merge`, the explicit, conflict-detecting merger.
+    """
+
+    def test_merge_two_registries_with_the_same_resource(self):
+        """
+        Two registries holding the same URI and resource merge into one.
+
+        This is the two-registry example: both sources contribute the same
+        resource, and the merged registry resolves it just as either source
+        did on its own.
+        """
+
+        resource = ID_AND_CHILDREN.create_resource(
+            {"ID": "http://example.com/1", "foo": "bar"},
+        )
+        first = Registry().with_resource("http://example.com/1", resource)
+        second = Registry().with_resource("http://example.com/1", resource)
+
+        merged = first.merge(second)
+
+        assert merged["http://example.com/1"] is resource
+        assert merged == Registry().with_resource(
+            "http://example.com/1",
+            resource,
+        )
+
+    def test_merge_conflicting_contents(self):
+        """
+        Different contents for the same URI are a conflict, not an overwrite.
+        """
+
+        one = ID_AND_CHILDREN.create_resource({"ID": "u", "foo": "bar"})
+        two = ID_AND_CHILDREN.create_resource({"ID": "u", "foo": "baz"})
+        first = Registry().with_resource("u", one)
+        second = Registry().with_resource("u", two)
+
+        with pytest.raises(exceptions.MergeConflict) as exc:
+            first.merge(second)
+
+        assert exc.value.uri == "u"
+        assert exc.value.resources == (one, two)
+        # Neither source registry was touched by the failed merge.
+        assert first["u"] is one
+        assert second["u"] is two
+
+    def test_merge_conflicting_anchors(self):
+        """
+        Changing an anchor is a conflict even when the URI is unchanged.
+        """
+
+        one = ID_AND_CHILDREN.create_resource(
+            {"ID": "u", "anchors": {"foo": 12}},
+        )
+        two = ID_AND_CHILDREN.create_resource(
+            {"ID": "u", "anchors": {"bar": 12}},
+        )
+        first = Registry().with_resource("u", one)
+        second = Registry().with_resource("u", two)
+
+        with pytest.raises(exceptions.MergeConflict):
+            first.merge(second)
+
+    def test_merge_conflicting_anchor_maps(self):
+        """
+        The same URI with different anchor maps is a conflict.
+
+        The resources themselves are identical, but the anchors registered
+        at the URI disagree, so the merge refuses to unify them.
+        """
+
+        resource = ID_AND_CHILDREN.create_resource(
+            {"ID": "u", "anchors": {"foo": 12}},
+        )
+        anchor_one = Anchor(
+            name="foo",
+            resource=ID_AND_CHILDREN.create_resource(12),
+        )
+        anchor_two = Anchor(
+            name="foo",
+            resource=ID_AND_CHILDREN.create_resource(13),
+        )
+        first = Registry(
+            {"u": resource},
+            anchors=HashTrieMap({("u", "foo"): anchor_one}),
+        )
+        second = Registry(
+            {"u": resource},
+            anchors=HashTrieMap({("u", "foo"): anchor_two}),
+        )
+
+        with pytest.raises(exceptions.MergeConflict):
+            first.merge(second)
+
+    def test_merge_conflicting_dialect(self):
+        """
+        Different dialects for the same URI are a conflict.
+        """
+
+        one = Resource.opaque({"foo": "bar"})
+        two = ID_AND_CHILDREN.create_resource({"foo": "bar"})
+        first = Registry().with_resource("u", one)
+        second = Registry().with_resource("u", two)
+
+        with pytest.raises(exceptions.MergeConflict):
+            first.merge(second)
+
+    def test_merge_does_not_call_retrieve(self):
+        """
+        Merging never calls the retrieve function.
+        """
+
+        calls = []
+
+        def retrieve(uri):
+            calls.append(uri)
+            raise exceptions.NoSuchResource(ref=uri)
+
+        resource = ID_AND_CHILDREN.create_resource({"ID": "u"})
+        first = Registry(retrieve=retrieve).with_resource("u", resource)
+        second = Registry(retrieve=retrieve).with_resource("u", resource)
+
+        merged = first.merge(second)
+
+        assert calls == []
+        assert merged["u"] is resource
+
+    def test_merge_preserves_retrieve(self):
+        """
+        The merged registry keeps the dynamic retrieval capability.
+        """
+
+        def retrieve(uri):
+            return ID_AND_CHILDREN.create_resource({"ID": uri})
+
+        resource = ID_AND_CHILDREN.create_resource({"ID": "u"})
+        first = Registry(retrieve=retrieve).with_resource("u", resource)
+        second = Registry()
+
+        merged = first.merge(second)
+
+        assert merged._retrieve is retrieve
+        assert merged.get_or_retrieve("urn:dynamic").value == (
+            ID_AND_CHILDREN.create_resource({"ID": "urn:dynamic"})
+        )
+
+    def test_merge_originals_remain_independently_resolvable(self):
+        """
+        The source registries are unchanged and still resolve on their own.
+        """
+
+        one = ID_AND_CHILDREN.create_resource({"ID": "u1", "foo": 1})
+        two = ID_AND_CHILDREN.create_resource({"ID": "u2", "foo": 2})
+        first = Registry().with_resource("u1", one)
+        second = Registry().with_resource("u2", two)
+
+        first.merge(second)
+
+        assert first["u1"] is one
+        assert second["u2"] is two
+        with pytest.raises(exceptions.NoSuchResource):
+            first["u2"]
+
+    def test_merge_self(self):
+        """
+        Merging a registry with itself short-circuits.
+        """
+
+        registry = Registry().with_resource("u", Resource.opaque({}))
+        assert registry.merge(registry) is registry
+
+    def test_merge_report_references_originals(self):
+        """
+        The conflict report holds the original resources, not copies.
+        """
+
+        one = Resource.opaque({"foo": "bar"})
+        two = Resource.opaque({"foo": "baz"})
+        first = Registry().with_resource("u", one)
+        second = Registry().with_resource("u", two)
+
+        with pytest.raises(exceptions.MergeConflict) as exc:
+            first.merge(second)
+
+        assert exc.value.resources[0] is one
+        assert exc.value.resources[1] is two
+
+    def test_merge_with_anchored_resources(self):
+        """
+        Merging crawled registries carries their anchors into the result.
+        """
+
+        resource = ID_AND_CHILDREN.create_resource(
+            {"ID": "u", "anchors": {"foo": 12}},
+        )
+        first = Registry().with_resource("u", resource).crawl()
+        second = Registry().with_resource("u", resource).crawl()
+
+        merged = first.merge(second)
+
+        assert merged.anchor("u", "foo").value == Anchor(
+            name="foo",
+            resource=ID_AND_CHILDREN.create_resource(12),
+        )
+
+    def test_merge_preserves_dynamic_scope(self):
+        """
+        Dynamic references still resolve through the merged registry.
+
+        The dynamic scope capability is preserved along with the original
+        resources, so a ``$dynamicRef`` which resolved in a source registry
+        resolves identically in the merged one.
+        """
+
+        TRUE = DRAFT202012.create_resource(True)
+        root = DRAFT202012.create_resource(
+            {
+                "$id": "http://example.com",
+                "$dynamicAnchor": "thing",
+                "$defs": {
+                    "foo": {
+                        "$id": "foo",
+                        "$dynamicAnchor": "thing",
+                        "$defs": {"bar": True},
+                    },
+                },
+            },
+        )
+        resources = [
+            ("http://example.com", root),
+            ("http://example.com/foo/", TRUE),
+            ("http://example.com/foo/bar", root),
+        ]
+        first = Registry().with_resources(resources)
+        second = Registry().with_resources(resources)
+        merged = first.merge(second)
+
+        def resolve(registry):
+            resolver = registry.resolver()
+            first_resolved = resolver.lookup("http://example.com")
+            second_resolved = first_resolved.resolver.lookup("foo/")
+            third_resolved = second_resolved.resolver.lookup("bar")
+            return third_resolved.resolver.lookup("#thing")
+
+        assert resolve(merged).contents == resolve(first).contents
+        assert resolve(merged).contents == root.contents
+
+
 class TestResolver:
     def test_lookup_exact_uri(self):
         resource = Resource.opaque(contents={"foo": "baz"})
