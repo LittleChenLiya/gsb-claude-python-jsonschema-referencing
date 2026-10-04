@@ -267,3 +267,120 @@ The above example would be written:
     print(resolver.lookup("https://json-schema.org/draft/2020-12/schema"))
 
 It is otherwise functionally equivalent to the above, other than that retrieval will not repeatedly make a web request.
+
+
+Importing Resources Offline
+---------------------------
+
+Sometimes you have a fixed set of resources -- schemas, say -- and you want to
+make sure that resolving references from them never accidentally tries to
+retrieve a resource from somewhere else (e.g. over the network).
+
+The `referencing.importer.import_offline` function takes a collection of
+`Resource`\ s (and/or ``(URI, Resource)`` pairs) along with a designated root
+URI, and walks the root document following subresources and references along
+each resource's own dialect.
+It produces a registry containing exactly the resources reachable from the
+root -- a *closed* set -- with no retrieval function, so subsequent resolution
+can never accidentally access the network.
+
+Cycles are allowed and are traversed only once.
+
+.. testcode::
+
+    from referencing import Resource, import_offline
+    from referencing.jsonschema import DRAFT202012
+
+    root = Resource(
+        contents={
+            "$id": "http://example.com/root",
+            "type": "object",
+            "properties": {"defs": {"$ref": "defs"}},
+        },
+        specification=DRAFT202012,
+    )
+    defs = Resource(
+        contents={
+            "$id": "http://example.com/defs",
+            "type": "object",
+            "properties": {"root": {"$ref": "root"}},
+        },
+        specification=DRAFT202012,
+    )
+
+    result = import_offline([root, defs], root="http://example.com/root")
+    print(sorted(uri for uri, _ in result.resources))
+
+.. testoutput::
+
+   ['http://example.com/defs', 'http://example.com/root']
+
+The returned `referencing.importer.OfflineImport` contains the closed
+`referencing.importer.OfflineImport.registry`, which you can use directly:
+
+.. testcode::
+
+    resolver = result.registry.resolver()
+    print(resolver.lookup("http://example.com/defs").contents["$id"])
+
+.. testoutput::
+
+   http://example.com/defs
+
+If any reference cannot be resolved using only the given resources,
+`referencing.importer.OfflineImportError` is raised aggregating *all* of the
+missing references, each reported with its source URI and the location of the
+reference within that resource.
+No partial registry is published.
+
+.. testcode::
+
+    from referencing import OfflineImportError
+
+    only_root = Resource(
+        contents={
+            "$id": "http://example.com/root",
+            "type": "object",
+            "properties": {"defs": {"$ref": "defs"}},
+        },
+        specification=DRAFT202012,
+    )
+
+    try:
+        import_offline([only_root], root="http://example.com/root")
+    except OfflineImportError as error:
+        for missing in error.missing:
+            print(missing.site.resource, missing.site.path, "->", missing.target)
+
+.. testoutput::
+
+   http://example.com/root ('properties', 'defs') -> http://example.com/defs
+
+Dynamic references (e.g. JSON Schema's ``$dynamicRef`` or ``$recursiveRef``)
+cannot be fully resolved statically -- their resolution depends on the dynamic
+scope at runtime.
+Such references are recorded as `referencing.importer.DynamicReference` objects
+in `referencing.importer.OfflineImport.dynamic_references`, each describing the
+dynamic scope constraint, rather than being pretended to be statically
+resolvable.
+
+.. testcode::
+
+    dynamic = Resource(
+        contents={
+            "$id": "http://example.com/dyn",
+            "type": "object",
+            "properties": {"foo": {"$dynamicRef": "#foo"}},
+            "$dynamicAnchor": "foo",
+        },
+        specification=DRAFT202012,
+    )
+
+    result = import_offline([dynamic], root="http://example.com/dyn")
+    print(len(result.dynamic_references))
+    print(result.dynamic_references[0].target)
+
+.. testoutput::
+
+   1
+   http://example.com/dyn#foo

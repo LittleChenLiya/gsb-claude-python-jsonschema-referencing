@@ -11,6 +11,7 @@ from referencing import Anchor, Registry, Resource, Specification, exceptions
 from referencing._attrs import frozen
 from referencing._core import (
     _UNSET,  # type: ignore[reportPrivateUsage]
+    Reference,
     Resolved as _Resolved,
     Resolver as _Resolver,
     _Unset,  # type: ignore[reportPrivateUsage]
@@ -134,6 +135,32 @@ def _legacy_anchor_in_id(
             resource=specification.create_resource(contents),
         ),
     ]
+
+
+def _references_in(*, dynamic_ref: bool = False, recursive_ref: bool = False):
+    """
+    Create a callable retrieving the references in a JSON Schema document.
+
+    All dialects support ``$ref``; draft 2020-12 added ``$dynamicRef`` and
+    draft 2019-09 supported ``$recursiveRef``.
+    """
+
+    def references_in(contents: Schema) -> Iterable[Reference[Schema]]:
+        if not isinstance(contents, Mapping):
+            return
+        ref = contents.get("$ref")
+        if ref is not None and isinstance(ref, str):
+            yield Reference(ref=ref)
+        if dynamic_ref:
+            dynamic = contents.get("$dynamicRef")
+            if dynamic is not None and isinstance(dynamic, str):
+                yield Reference(ref=dynamic, dynamic=True)
+        if recursive_ref:
+            recursive = contents.get("$recursiveRef")
+            if recursive is not None and isinstance(recursive, str):
+                yield Reference(ref=recursive, recursive=True)
+
+    return references_in
 
 
 def _subresources_of(
@@ -384,6 +411,7 @@ DRAFT202012 = Specification(
         },
     ),
     anchors_in=_anchor,
+    references_in=_references_in(dynamic_ref=True),
     maybe_in_subresource=_maybe_in_subresource(
         in_value={
             "additionalProperties",
@@ -436,6 +464,7 @@ DRAFT201909 = Specification(
         },
     ),
     anchors_in=_anchor_2019,
+    references_in=_references_in(recursive_ref=True),
     maybe_in_subresource=_maybe_in_subresource_crazy_items(
         in_value={
             "additionalItems",
@@ -479,6 +508,7 @@ DRAFT7 = Specification(
         in_subvalues={"definitions", "patternProperties", "properties"},
     ),
     anchors_in=_legacy_anchor_in_dollar_id,
+    references_in=_references_in(),
     maybe_in_subresource=_maybe_in_subresource_crazy_items_dependencies(
         in_value={
             "additionalItems",
@@ -510,6 +540,7 @@ DRAFT6 = Specification(
         in_subvalues={"definitions", "patternProperties", "properties"},
     ),
     anchors_in=_legacy_anchor_in_dollar_id,
+    references_in=_references_in(),
     maybe_in_subresource=_maybe_in_subresource_crazy_items_dependencies(
         in_value={
             "additionalItems",
@@ -532,6 +563,7 @@ DRAFT4 = Specification(
         in_subvalues={"definitions", "patternProperties", "properties"},
     ),
     anchors_in=_legacy_anchor_in_id,
+    references_in=_references_in(),
     maybe_in_subresource=_maybe_in_subresource_crazy_items_dependencies(
         in_value={"additionalItems", "additionalProperties", "not"},
         in_subarray={"allOf", "anyOf", "oneOf"},
@@ -547,6 +579,7 @@ DRAFT3 = Specification(
         in_subvalues={"definitions", "patternProperties", "properties"},
     ),
     anchors_in=_legacy_anchor_in_id,
+    references_in=_references_in(),
     maybe_in_subresource=_maybe_in_subresource_crazy_items_dependencies(
         in_value={"additionalItems", "additionalProperties"},
         in_subarray={"extends"},

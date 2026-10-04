@@ -36,6 +36,29 @@ class _MaybeInSubresource(Protocol[D]):
     ) -> Resolver[D]: ...
 
 
+@frozen
+class Reference(Generic[D]):
+    """
+    A reference (e.g. a JSON Schema ``$ref``) found within a resource document.
+
+    Beyond plain references, some specifications have *dynamic* references
+    (e.g. draft 2020-12's ``$dynamicRef``) whose resolution depends on the
+    dynamic scope at runtime, or *recursive* ones (draft 2019-09's
+    ``$recursiveRef``). Such references cannot be fully resolved statically.
+    """
+
+    #: The literal reference string, as written in the document.
+    ref: URI
+
+    #: Whether this is a dynamic reference, whose target may change depending
+    #: on the dynamic scope at runtime.
+    dynamic: bool = False
+
+    #: Whether this is a recursive reference (draft 2019-09's
+    #: ``$recursiveRef``).
+    recursive: bool = False
+
+
 def _detect_or_error(contents: D) -> Specification[D]:
     if not isinstance(contents, Mapping):
         raise exceptions.CannotDetermineSpecification(contents)
@@ -111,6 +134,15 @@ class Specification(Generic[D]):
         Iterable[AnchorType[D]],
     ] = field(alias="anchors_in")
 
+    #: Retrieve the references contained in the given document.
+    #:
+    #: This is used by tooling which needs to discover references without
+    #: resolving them, e.g. to import a closed set of resources offline.
+    _references_in: Callable[
+        [D],
+        Iterable[Reference[D]],
+    ] = field(alias="references_in", default=lambda contents: [])
+
     #: An opaque specification where resources have no subresources
     #: nor internal identifiers.
     OPAQUE: ClassVar[Specification[Any]]
@@ -156,6 +188,12 @@ class Specification(Generic[D]):
         Retrieve the anchors contained in the given document.
         """
         return self._anchors_in(self, contents)
+
+    def references_in(self, contents: D):
+        """
+        Retrieve the references contained in the given document.
+        """
+        return self._references_in(contents)
 
     def create_resource(self, contents: D) -> Resource[D]:
         """
