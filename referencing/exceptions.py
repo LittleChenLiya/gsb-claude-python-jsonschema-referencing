@@ -75,6 +75,34 @@ class Unretrievable(KeyError):
 
 
 @frozen
+class MergeConflict(Exception):
+    """
+    Two registries disagree about the resource identified by some URI.
+
+    Raised when strictly merging registries (see `Registry.merge`).
+
+    Deliberately, the conflicting resources themselves are *not*
+    included in this exception -- only the URI they were found under
+    and a short static reason -- so that error reports never copy
+    (potentially large or sensitive) resource values.
+    """
+
+    uri: URI
+    reason: str
+
+    def __eq__(self, other: object) -> bool:
+        if self.__class__ is not other.__class__:
+            return NotImplemented
+        return attrs.astuple(self) == attrs.astuple(other)
+
+    def __hash__(self) -> int:
+        return hash(attrs.astuple(self))
+
+    def __str__(self) -> str:
+        return f"Conflicting resources for {self.uri!r}: {self.reason}."
+
+
+@frozen
 class CannotDetermineSpecification(Exception):
     """
     Attempting to detect the appropriate `Specification` failed.

@@ -2,6 +2,11 @@
 Changelog
 =========
 
+v0.38.0
+-------
+
+* Add `Registry.merge`, an explicit strict merger which raises `referencing.exceptions.MergeConflict` when two registries disagree about the resource identified by a URI, rather than silently overwriting as `Registry.combine` does.
+
 v0.37.0
 -------
 

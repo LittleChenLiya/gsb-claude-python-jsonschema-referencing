@@ -289,6 +289,27 @@ def _fail_to_retrieve(uri: URI):
     raise exceptions.NoSuchResource(ref=uri)
 
 
+def _merge_conflict_reason(
+    first: Resource[D],
+    second: Resource[D],
+) -> str | None:
+    """
+    Return why two resources disagree, or `None` if they are identical.
+
+    A resource's dialect (`Specification`), its anchor identity, and its
+    contents all participate in the comparison.
+    """
+    if first._specification.name != second._specification.name:
+        return "differing specifications"
+    first_anchors = sorted(anchor.name for anchor in first.anchors())
+    second_anchors = sorted(anchor.name for anchor in second.anchors())
+    if first_anchors != second_anchors:
+        return "differing anchors"
+    if first.contents != second.contents:
+        return "differing contents"
+    return None
+
+
 @frozen
 class Registry(Mapping[URI, Resource[D]]):
     r"""
@@ -561,6 +582,95 @@ class Registry(Mapping[URI, Resource[D]]):
                 if registry._retrieve is not retrieve is not _fail_to_retrieve:
                     raise ValueError(  # noqa: TRY003
                         "Cannot combine registries with conflicting retrieval "
+                        "functions.",
+                    )
+                retrieve = registry._retrieve
+        return evolve(
+            self,
+            anchors=anchors,
+            resources=resources,
+            uncrawled=uncrawled,
+            retrieve=retrieve,
+        )
+
+    def merge(self, *registries: Registry[D]) -> Registry[D]:
+        """
+        Strictly merge one or more other registries together with this one.
+
+        Unlike `combine`, merging is explicit about disagreement: whenever
+        two registries contain a resource for the same URI, the resources
+        must be semantically identical -- same dialect (`Specification`),
+        same anchors, and same contents -- otherwise a
+        `referencing.exceptions.MergeConflict` is raised, rather than
+        silently allowing a later registry to overwrite an earlier one.
+
+        URIs are compared under the same fixed normalization rule used
+        elsewhere in this package: an empty fragment is equivalent to no
+        fragment at all.
+
+        Neither this registry nor any of the arguments is modified, no
+        ``retrieve`` function is called, and a new registry is produced
+        only if every resource agrees. Resources (and thereby their
+        dynamic-scope behavior when resolving) are carried over as-is.
+
+        For example:
+
+        .. code:: python
+
+            from referencing import Registry, Resource
+
+            one = Resource.opaque(contents={"foo": 1})
+            two = Resource.opaque(contents={"bar": 2})
+            first = Registry().with_resource("urn:example:one", one)
+            second = Registry().with_resource("urn:example:two", two)
+            merged = first.merge(second)
+
+        Raises:
+
+            `referencing.exceptions.MergeConflict`
+
+                if two registries disagree about the resource identified
+                by some URI
+
+        """
+        if registries == (self,):
+            return self
+        resources = self._resources
+        anchors = self._anchors
+        uncrawled = self._uncrawled
+        retrieve = self._retrieve
+        for registry in registries:
+            for uri, resource in registry._resources.items():
+                # Fixed rule: empty fragments are equivalent to no fragment.
+                uri = uri.rstrip("#")
+                existing = resources.get(uri)
+                if existing is None:
+                    resources = resources.insert(uri, resource)
+                    if uri in registry._uncrawled:
+                        uncrawled = uncrawled.insert(uri)
+                    continue
+                reason = _merge_conflict_reason(existing, resource)
+                if reason is not None:
+                    raise exceptions.MergeConflict(uri=uri, reason=reason)
+            for key, anchor in registry._anchors.items():
+                existing = anchors.get(key)
+                if existing is None:
+                    anchors = anchors.insert(key, anchor)
+                    continue
+                if (
+                    _merge_conflict_reason(existing.resource, anchor.resource)
+                    is not None
+                ):
+                    uri, name = key
+                    raise exceptions.MergeConflict(
+                        uri=f"{uri}#{name}",
+                        reason="differing anchors",
+                    )
+
+            if registry._retrieve is not _fail_to_retrieve:
+                if registry._retrieve is not retrieve is not _fail_to_retrieve:
+                    raise ValueError(  # noqa: TRY003
+                        "Cannot merge registries with conflicting retrieval "
                         "functions.",
                     )
                 retrieve = registry._retrieve

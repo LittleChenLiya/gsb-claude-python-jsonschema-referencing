@@ -267,3 +267,29 @@ The above example would be written:
     print(resolver.lookup("https://json-schema.org/draft/2020-12/schema"))
 
 It is otherwise functionally equivalent to the above, other than that retrieval will not repeatedly make a web request.
+
+
+Merging Registries
+------------------
+
+`Registry.combine` unions registries together, but silently lets later registries overwrite earlier ones when two registries contain resources for the same URI.
+When you instead want disagreement to be *loud*, `Registry.merge` strictly merges registries: resources found under the same URI must be semantically identical -- same dialect, same anchors, and same contents -- or a `referencing.exceptions.MergeConflict` is raised.
+
+.. testcode::
+
+    from referencing import Registry, Resource
+
+
+    one = Resource.opaque(contents={"foo": 1})
+    two = Resource.opaque(contents={"bar": 2})
+    first = Registry().with_resource("urn:example:one", one)
+    second = Registry().with_resource("urn:example:two", two)
+
+    merged = first.merge(second)
+    print(sorted(merged))
+
+.. testoutput::
+
+    ['urn:example:one', 'urn:example:two']
+
+Neither original registry is modified, no ``retrieve`` function is called during the merge, and the conflicting resources themselves are never copied into the raised exception -- only the URI and a short reason.
