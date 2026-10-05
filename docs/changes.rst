@@ -2,6 +2,15 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+* Add explicit resolution tracing via the new ``referencing.tracing`` module.
+  Passing a ``referencing.tracing.ResolutionTrace`` to ``Resolver.lookup``
+  records each resolved reference's base URI, fragment, and resolved resource
+  identity (including nested ``$id`` base changes and dynamic scope
+  identities) as resolution happens, without changing resolution results.
+
 v0.37.0
 -------
 

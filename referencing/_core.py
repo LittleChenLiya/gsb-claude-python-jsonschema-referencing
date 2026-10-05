@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from enum import Enum
-from typing import Any, ClassVar, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, TypeVar
 from urllib.parse import unquote, urldefrag, urljoin
 
 from attrs import evolve, field
@@ -11,6 +11,9 @@ from rpds import HashTrieMap, HashTrieSet, List
 from referencing import exceptions
 from referencing._attrs import frozen
 from referencing.typing import URI, Anchor as AnchorType, D, Mapping, Retrieve
+
+if TYPE_CHECKING:
+    from referencing.tracing import ResolutionTrace
 
 EMPTY_UNCRAWLED: HashTrieSet[URI] = HashTrieSet()
 EMPTY_PREVIOUS_RESOLVERS: List[URI] = List()
@@ -645,9 +648,19 @@ class Resolver(Generic[D]):
     _registry: Registry[D] = field(alias="registry")
     _previous: List[URI] = field(default=List(), repr=False, alias="previous")
 
-    def lookup(self, ref: URI) -> Resolved[D]:
+    def lookup(
+        self,
+        ref: URI,
+        trace: ResolutionTrace | None = None,
+    ) -> Resolved[D]:
         """
         Resolve the given reference to the resource it points to.
+
+        If a `ResolutionTrace` is provided via ``trace``, exactly one hop
+        is recorded in it, inline, as the reference is resolved -- the
+        base URI and fragment in effect, the identity of the resource
+        found, and the current dynamic scope. The resolved result itself
+        is unaffected by tracing.
 
         Raises:
 
@@ -673,24 +686,60 @@ class Resolver(Generic[D]):
             uri, fragment = self._base_uri, ref[1:]
         else:
             uri, fragment = urldefrag(urljoin(self._base_uri, ref))
+
+        def record(target: URI | None):
+            if trace is not None:
+                trace.record(
+                    base_uri=self._base_uri,
+                    ref=ref,
+                    fragment=fragment,
+                    target=target,
+                    dynamic_scope=tuple(
+                        uri for uri, _ in self.dynamic_scope()
+                    ),
+                )
+
         try:
             retrieved = self._registry.get_or_retrieve(uri)
         except exceptions.NoSuchResource:
+            record(target=None)
             raise exceptions.Unresolvable(ref=ref) from None
         except exceptions.Unretrievable as error:
+            record(target=None)
             raise exceptions.Unresolvable(ref=ref) from error
 
-        if fragment.startswith("/"):
-            resolver = self._evolve(registry=retrieved.registry, base_uri=uri)
-            return retrieved.value.pointer(pointer=fragment, resolver=resolver)
+        try:
+            if fragment.startswith("/"):
+                resolver = self._evolve(
+                    registry=retrieved.registry,
+                    base_uri=uri,
+                )
+                resolved = retrieved.value.pointer(
+                    pointer=fragment,
+                    resolver=resolver,
+                )
+            elif fragment:
+                retrieved = retrieved.registry.anchor(uri, fragment)
+                resolver = self._evolve(
+                    registry=retrieved.registry,
+                    base_uri=uri,
+                )
+                resolved = retrieved.value.resolve(resolver=resolver)
+            else:
+                resolver = self._evolve(
+                    registry=retrieved.registry,
+                    base_uri=uri,
+                )
+                resolved = Resolved(
+                    contents=retrieved.value.contents,
+                    resolver=resolver,
+                )
+        except exceptions.Unresolvable:
+            record(target=None)
+            raise
 
-        if fragment:
-            retrieved = retrieved.registry.anchor(uri, fragment)
-            resolver = self._evolve(registry=retrieved.registry, base_uri=uri)
-            return retrieved.value.resolve(resolver=resolver)
-
-        resolver = self._evolve(registry=retrieved.registry, base_uri=uri)
-        return Resolved(contents=retrieved.value.contents, resolver=resolver)
+        record(target=resolved.resolver._base_uri)
+        return resolved
 
     def in_subresource(self, subresource: Resource[D]) -> Resolver[D]:
         """

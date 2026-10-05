@@ -66,6 +66,14 @@ referencing.exceptions
    :undoc-members:
 
 
+referencing.tracing
+^^^^^^^^^^^^^^^^^^^
+
+.. automodule:: referencing.tracing
+   :members:
+   :undoc-members:
+
+
 referencing.retrieval
 ^^^^^^^^^^^^^^^^^^^^^
 
