@@ -7,11 +7,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import attrs
+from attrs import field
 
 from referencing._attrs import frozen
 
 if TYPE_CHECKING:
     from referencing import Resource
+    from referencing._core import TraceEntry
     from referencing.typing import URI
 
 
@@ -102,13 +104,20 @@ class Unresolvable(Exception):
 
     ref: URI
 
+    #: The resolution trace for the chain of references that led to this
+    #: failure. Each entry records one ``$ref`` hop.
+    trace: tuple[TraceEntry, ...] = field(default=(), kw_only=True, eq=False)
+
+    def __str__(self) -> str:
+        return str(self.ref)
+
     def __eq__(self, other: object) -> bool:
         if self.__class__ is not other.__class__:
             return NotImplemented
-        return attrs.astuple(self) == attrs.astuple(other)
+        return self.ref == other.ref
 
     def __hash__(self) -> int:
-        return hash(attrs.astuple(self))
+        return hash(self.ref)
 
 
 @frozen

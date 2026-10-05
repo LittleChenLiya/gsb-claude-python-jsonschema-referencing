@@ -1,7 +1,14 @@
 from rpds import HashTrieMap
 import pytest
 
-from referencing import Anchor, Registry, Resource, Specification, exceptions
+from referencing import (
+    Anchor,
+    Registry,
+    Resource,
+    Specification,
+    TraceEntry,
+    exceptions,
+)
 from referencing.jsonschema import DRAFT202012
 
 ID_AND_CHILDREN = Specification(
@@ -958,6 +965,195 @@ class TestResolver:
             ("http://example.com/", second.resolver._registry),
         ]
         assert list(first.resolver.dynamic_scope()) == []
+
+    # The trace tests below can be run locally with:
+    #   pytest referencing/tests/test_core.py -k trace
+    def test_trace_records_ref_hops(self):
+        """
+        A chain of references records each hop's base URI, fragment, and
+        resolved resource identity.
+        """
+
+        root = ID_AND_CHILDREN.create_resource(
+            {
+                "ID": "http://example.com/",
+                "children": [
+                    {
+                        "ID": "child/",
+                        "children": [{"ID": "grandchild"}],
+                    },
+                ],
+            },
+        )
+        registry = root @ Registry()
+
+        resolver = registry.resolver()
+        first = resolver.lookup("http://example.com/")
+        second = first.resolver.lookup("#/children/0")
+        third = second.resolver.lookup("grandchild")
+
+        assert third.trace == (
+            TraceEntry(
+                base_uri="",
+                fragment="",
+                resource_uri="http://example.com/",
+            ),
+            TraceEntry(
+                base_uri="http://example.com/",
+                fragment="/children/0",
+                resource_uri="http://example.com/",
+            ),
+            TraceEntry(
+                base_uri="http://example.com/child/",
+                fragment="",
+                resource_uri="http://example.com/child/grandchild",
+            ),
+        )
+
+    def test_trace_nested_id_changes_base(self):
+        """
+        A nested ``$id`` changes the base URI visible to subsequent hops.
+        """
+
+        root = ID_AND_CHILDREN.create_resource(
+            {
+                "ID": "http://example.com/",
+                "children": [
+                    {
+                        "ID": "nested/",
+                        "children": [{"ID": "deep"}],
+                    },
+                ],
+            },
+        )
+        registry = root @ Registry()
+
+        resolver = registry.resolver()
+        first = resolver.lookup("http://example.com/")
+        second = first.resolver.lookup("#/children/0")
+        third = second.resolver.lookup("deep")
+
+        assert third.trace[-1].base_uri == "http://example.com/nested/"
+        assert third.trace[-1].resource_uri == "http://example.com/nested/deep"
+
+    def test_trace_missing_target_carries_completed_chain(self):
+        """
+        A failed resolution carries the trace of hops completed so far.
+        """
+
+        root = ID_AND_CHILDREN.create_resource(
+            {
+                "ID": "http://example.com/",
+                "children": [{"ID": "child/"}],
+            },
+        )
+        registry = root @ Registry()
+
+        resolver = registry.resolver()
+        first = resolver.lookup("http://example.com/")
+        with pytest.raises(exceptions.Unresolvable) as e:
+            first.resolver.lookup("#/children/99")
+
+        assert e.value.trace == (
+            TraceEntry(
+                base_uri="",
+                fragment="",
+                resource_uri="http://example.com/",
+            ),
+            TraceEntry(
+                base_uri="http://example.com/",
+                fragment="/children/99",
+                resource_uri="http://example.com/",
+            ),
+        )
+
+    def test_trace_three_hops(self):
+        """
+        A three-hop reference chain records all three hops.
+        """
+
+        root = ID_AND_CHILDREN.create_resource(
+            {
+                "ID": "http://example.com/",
+                "children": [
+                    {
+                        "ID": "one/",
+                        "children": [
+                            {
+                                "ID": "two/",
+                                "children": [{"ID": "three"}],
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+        registry = root @ Registry()
+
+        resolver = registry.resolver()
+        first = resolver.lookup("http://example.com/")
+        second = first.resolver.lookup("#/children/0")
+        third = second.resolver.lookup("two/")
+        fourth = third.resolver.lookup("three")
+
+        assert len(fourth.trace) == 4
+        assert fourth.trace[1].fragment == "/children/0"
+        assert fourth.trace[2].fragment == ""
+        assert fourth.trace[3].fragment == ""
+        assert [entry.resource_uri for entry in fourth.trace] == [
+            "http://example.com/",
+            "http://example.com/",
+            "http://example.com/one/two/",
+            "http://example.com/one/two/three",
+        ]
+
+    def test_trace_circular_reference_does_not_grow_infinitely(self):
+        """
+        Circular references do not grow the trace beyond the cycle.
+        """
+
+        root = ID_AND_CHILDREN.create_resource(
+            {
+                "ID": "http://example.com/",
+                "children": [],
+            },
+        )
+        registry = root @ Registry()
+
+        resolver = registry.resolver()
+        first = resolver.lookup("http://example.com/")
+        second = first.resolver.lookup("#")
+        third = second.resolver.lookup("#")
+
+        assert len(third.trace) == 2
+        assert third.trace[0] == TraceEntry(
+            base_uri="",
+            fragment="",
+            resource_uri="http://example.com/",
+        )
+        assert third.trace[1] == TraceEntry(
+            base_uri="http://example.com/",
+            fragment="",
+            resource_uri="http://example.com/",
+        )
+
+    def test_trace_does_not_store_document_values(self):
+        """
+        The trace records only URIs, not the resolved document contents.
+        """
+
+        root = ID_AND_CHILDREN.create_resource(
+            {"ID": "http://example.com/", "children": []},
+        )
+        registry = root @ Registry()
+
+        resolver = registry.resolver()
+        resolved = resolver.lookup("http://example.com/")
+
+        for entry in resolved.trace:
+            assert isinstance(entry.base_uri, str)
+            assert isinstance(entry.fragment, str)
+            assert isinstance(entry.resource_uri, str)
 
 
 class TestSpecification:

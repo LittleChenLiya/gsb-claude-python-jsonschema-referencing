@@ -608,6 +608,31 @@ class Retrieved(Generic[D, AnchorOrResource]):
     registry: Registry[D]
 
 
+#: A single hop in a resolution trace.
+@frozen
+class TraceEntry:
+    """
+    A single ``$ref`` hop recorded during resolution.
+
+    Each entry captures the base URI the reference was resolved against,
+    the reference's fragment, and the identity of the resource that was
+    ultimately resolved to.
+
+    The trace intentionally does *not* retain the resolved document itself;
+    it records only the URIs involved, so that retaining a trace does not
+    retain document values.
+    """
+
+    #: The base URI against which the reference was resolved.
+    base_uri: URI
+
+    #: The fragment of the reference (may be an empty string).
+    fragment: str
+
+    #: The identity of the resource that was resolved to.
+    resource_uri: URI
+
+
 @frozen
 class Resolved(Generic[D]):
     """
@@ -616,6 +641,17 @@ class Resolved(Generic[D]):
 
     contents: D
     resolver: Resolver[D]
+
+    @property
+    def trace(self) -> tuple[TraceEntry, ...]:
+        """
+        The explicit resolution trace for the chain of references that
+        produced this result.
+
+        Each entry records one ``$ref`` hop: the base URI it was resolved
+        against, its fragment, and the identity of the resource resolved to.
+        """
+        return self.resolver._trace
 
 
 @frozen
@@ -644,6 +680,11 @@ class Resolver(Generic[D]):
     _base_uri: URI = field(alias="base_uri")
     _registry: Registry[D] = field(alias="registry")
     _previous: List[URI] = field(default=List(), repr=False, alias="previous")
+    _trace: tuple[TraceEntry, ...] = field(
+        default=(),
+        repr=False,
+        alias="trace",
+    )
 
     def lookup(self, ref: URI) -> Resolved[D]:
         """
@@ -673,24 +714,57 @@ class Resolver(Generic[D]):
             uri, fragment = self._base_uri, ref[1:]
         else:
             uri, fragment = urldefrag(urljoin(self._base_uri, ref))
+
+        trace = self._trace
         try:
             retrieved = self._registry.get_or_retrieve(uri)
         except exceptions.NoSuchResource:
-            raise exceptions.Unresolvable(ref=ref) from None
+            raise exceptions.Unresolvable(ref=ref, trace=trace) from None
         except exceptions.Unretrievable as error:
-            raise exceptions.Unresolvable(ref=ref) from error
+            raise exceptions.Unresolvable(ref=ref, trace=trace) from error
 
-        if fragment.startswith("/"):
-            resolver = self._evolve(registry=retrieved.registry, base_uri=uri)
-            return retrieved.value.pointer(pointer=fragment, resolver=resolver)
+        entry = TraceEntry(
+            base_uri=self._base_uri,
+            fragment=fragment,
+            resource_uri=uri,
+        )
 
-        if fragment:
-            retrieved = retrieved.registry.anchor(uri, fragment)
-            resolver = self._evolve(registry=retrieved.registry, base_uri=uri)
-            return retrieved.value.resolve(resolver=resolver)
+        # Break circular references: if this exact hop has already been
+        # recorded, don't append it again.
+        if not any(
+            each.base_uri == self._base_uri and each.fragment == fragment
+            for each in trace
+        ):
+            trace = (*trace, entry)
 
-        resolver = self._evolve(registry=retrieved.registry, base_uri=uri)
-        return Resolved(contents=retrieved.value.contents, resolver=resolver)
+        resolver = self._evolve(
+            registry=retrieved.registry,
+            base_uri=uri,
+            trace=trace,
+        )
+
+        try:
+            if fragment.startswith("/"):
+                return retrieved.value.pointer(
+                    pointer=fragment,
+                    resolver=resolver,
+                )
+
+            if fragment:
+                retrieved = retrieved.registry.anchor(uri, fragment)
+                resolver = self._evolve(
+                    registry=retrieved.registry,
+                    base_uri=uri,
+                    trace=trace,
+                )
+                return retrieved.value.resolve(resolver=resolver)
+
+            return Resolved(
+                contents=retrieved.value.contents,
+                resolver=resolver,
+            )
+        except exceptions.Unresolvable as error:
+            raise evolve(error, trace=trace) from None
 
     def in_subresource(self, subresource: Resource[D]) -> Resolver[D]:
         """

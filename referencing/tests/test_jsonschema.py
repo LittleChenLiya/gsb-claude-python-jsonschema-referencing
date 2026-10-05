@@ -1,6 +1,6 @@
 import pytest
 
-from referencing import Registry, Resource, Specification
+from referencing import Registry, Resource, Specification, TraceEntry
 import referencing.jsonschema
 
 
@@ -376,6 +376,133 @@ def test_multiple_lookup_recursive_ref_with_nonrecursive_ref():
     resolver = second.resolver.lookup("bar").resolver
     fourth = referencing.jsonschema.lookup_recursive_ref(resolver=resolver)
     assert fourth.contents == two.contents
+
+
+def test_trace_records_ref_hops_to_anchor():
+    """
+    A chain from root through ``$defs`` to an anchor records two hops and
+    the accurate base URI at each.
+    """
+
+    root = referencing.jsonschema.DRAFT202012.create_resource(
+        {
+            "$id": "http://example.com/",
+            "$defs": {
+                "a": {"$ref": "#/$defs/b"},
+                "b": {"$ref": "#foo"},
+                "c": {"$anchor": "foo", "type": "string"},
+            },
+        },
+    )
+    registry = root @ Registry()
+
+    resolver = registry.resolver()
+    first = resolver.lookup("http://example.com/")
+    second = first.resolver.lookup("#/$defs/a")
+    third = second.resolver.lookup("#foo")
+
+    assert third.trace == (
+        TraceEntry(
+            base_uri="",
+            fragment="",
+            resource_uri="http://example.com/",
+        ),
+        TraceEntry(
+            base_uri="http://example.com/",
+            fragment="/$defs/a",
+            resource_uri="http://example.com/",
+        ),
+        TraceEntry(
+            base_uri="http://example.com/",
+            fragment="foo",
+            resource_uri="http://example.com/",
+        ),
+    )
+
+
+def test_trace_nested_id_changes_base_for_anchor():
+    """
+    A nested ``$id`` changes the base URI visible to a subsequent anchor
+    lookup.
+    """
+
+    root = referencing.jsonschema.DRAFT202012.create_resource(
+        {
+            "$id": "http://example.com/",
+            "$defs": {
+                "a": {
+                    "$id": "nested/",
+                    "$defs": {"b": {"$anchor": "foo", "type": "string"}},
+                },
+            },
+        },
+    )
+    registry = root @ Registry()
+
+    resolver = registry.resolver()
+    first = resolver.lookup("http://example.com/")
+    second = first.resolver.lookup("#/$defs/a")
+    third = second.resolver.lookup("#foo")
+
+    assert third.trace[-1].base_uri == "http://example.com/nested/"
+    assert third.trace[-1].fragment == "foo"
+
+
+def test_trace_dynamic_scope_identity_preserved():
+    """
+    Dynamic anchors resolve with the real resolver scope, and the trace
+    records the base URI each hop was resolved against.
+    """
+
+    root = referencing.jsonschema.DRAFT202012.create_resource(
+        {
+            "$id": "http://example.com/",
+            "$dynamicAnchor": "fooAnchor",
+            "$defs": {
+                "foo": {
+                    "$id": "foo",
+                    "$dynamicAnchor": "fooAnchor",
+                    "$defs": {
+                        "bar": True,
+                        "baz": {"$dynamicAnchor": "fooAnchor"},
+                    },
+                },
+            },
+        },
+    )
+    resolver = (
+        Registry()
+        .with_resources(
+            [
+                ("http://example.com", root),
+                (
+                    "http://example.com/foo/",
+                    referencing.jsonschema.DRAFT202012.create_resource(True),
+                ),
+                ("http://example.com/foo/bar", root),
+            ],
+        )
+        .resolver()
+    )
+
+    first = resolver.lookup("http://example.com")
+    second = first.resolver.lookup("foo/")
+    third = second.resolver.lookup("bar")
+    fourth = third.resolver.lookup("#fooAnchor")
+
+    assert fourth.contents == root.contents
+    assert [entry.base_uri for entry in fourth.trace] == [
+        "",
+        "http://example.com",
+        "http://example.com/foo/",
+        "http://example.com/foo/bar",
+    ]
+    assert [entry.fragment for entry in fourth.trace] == [
+        "",
+        "",
+        "",
+        "fooAnchor",
+    ]
 
 
 def test_empty_registry():
